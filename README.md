@@ -21,6 +21,8 @@ both directories. The file counts also include files without duplicates; use
 them to judge how similar the directories are. This mode does not delete
 directories.
 
+Each listed file includes its size in B, KiB, MiB, and larger units as needed.
+
 `--select` requires `fzf`. Select files with Tab, press Enter, then type
 `DELETE` at the confirmation prompt. The script refuses a selection that would
 remove every copy in a duplicate group.

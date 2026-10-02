@@ -22,9 +22,21 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int]]:
+def human_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    value = float(size)
+    for unit in ("KiB", "MiB", "GiB", "TiB", "PiB"):
+        value /= 1024
+        if value < 1024 or unit == "PiB":
+            return f"{value:.1f} {unit}".replace(".0 ", " ")
+    raise AssertionError("unreachable")
+
+
+def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int], dict[Path, int]]:
     sizes: dict[int, list[Path]] = defaultdict(list)
     counts: dict[Path, int] = defaultdict(int)
+    file_sizes: dict[Path, int] = {}
     for current, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = [name for name in dirs if not (Path(current) / name).is_symlink()]
         for name in files:
@@ -32,7 +44,9 @@ def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int]]:
             try:
                 if path.is_symlink() or not path.is_file():
                     continue
-                sizes[path.stat().st_size].append(path)
+                size = path.stat().st_size
+                sizes[size].append(path)
+                file_sizes[path] = size
                 parent = path.parent
                 while parent != root:
                     counts[parent] += 1
@@ -49,30 +63,35 @@ def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int]]:
             except OSError as error:
                 print(f"Warning: cannot read {path}: {error}", file=sys.stderr)
     groups = [sorted(paths) for paths in hashes.values() if len(paths) > 1]
-    return sorted(groups, key=lambda paths: str(paths[0])), counts
+    return sorted(groups, key=lambda paths: str(paths[0])), counts, file_sizes
 
 
-def show_groups(groups: list[list[Path]], root: Path, pretty: bool) -> None:
+def show_groups(groups: list[list[Path]], root: Path, pretty: bool, file_sizes: dict[Path, int]) -> None:
     for number, paths in enumerate(groups, 1):
         print(f"Duplicate group {number} ({len(paths)} files):")
         if not pretty:
             for path in paths:
-                print(f"  {path}")
+                print(f"  {path} ({human_size(file_sizes[path])})")
             continue
         tree: dict = {}
         for path in paths:
             node = tree
-            for part in path.relative_to(root).parts:
+            parts = path.relative_to(root).parts
+            for part in parts[:-1]:
                 node = node.setdefault(part, {})
+            node[parts[-1]] = file_sizes[path]
 
         def render(node: dict, indent: str = "  ") -> None:
             for name, child in sorted(node.items()):
                 label = name
-                while len(child) == 1:
+                while isinstance(child, dict) and len(child) == 1:
                     name, child = next(iter(child.items()))
                     label += "/" + name
-                print(f"{indent}{label}{'/' if child else ''}")
-                render(child, indent + "  ")
+                if isinstance(child, dict):
+                    print(f"{indent}{label}/")
+                    render(child, indent + "  ")
+                else:
+                    print(f"{indent}{label} ({human_size(child)})")
 
         render(tree)
     print(f"\nFound {len(groups)} duplicate group(s).")
@@ -107,17 +126,18 @@ def delete_copy(path: Path, keep: Path) -> bool:
     try:
         if path.is_symlink() or keep.is_symlink() or not path.is_file() or not keep.is_file():
             raise OSError("file disappeared or became a symlink")
-        if path.stat().st_size != keep.stat().st_size or digest(path) != digest(keep):
+        size = path.stat().st_size
+        if size != keep.stat().st_size or digest(path) != digest(keep):
             raise OSError("files no longer have identical contents")
         path.unlink()
     except OSError as error:
         print(f"Cannot delete {path}: {error}", file=sys.stderr)
         return False
-    print(f"Deleted: {path}\nKept:    {keep}")
+    print(f"Deleted: {path} ({human_size(size)})\nKept:    {keep} ({human_size(size)})")
     return True
 
 
-def select_copies(groups: list[list[Path]], root: Path) -> int:
+def select_copies(groups: list[list[Path]], root: Path, file_sizes: dict[Path, int]) -> int:
     if shutil.which("fzf") is None:
         print("fzf is required for --select.", file=sys.stderr)
         return 2
@@ -128,7 +148,7 @@ def select_copies(groups: list[list[Path]], root: Path) -> int:
             index = len(choices) + 1
             choices[index] = (group_number, path)
             label = str(path.relative_to(root)).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
-            lines.append(f"{index}\tgroup {group_number}\t{label}")
+            lines.append(f"{index}\tgroup {group_number}\t{label} ({human_size(file_sizes[path])})")
     result = subprocess.run(
         ["fzf", "--multi", "--read0", "--print0", "--delimiter=\t", "--with-nth=2..",
          "--header=Tab: select files; Enter: review deletion"],
@@ -146,7 +166,7 @@ def select_copies(groups: list[list[Path]], root: Path) -> int:
             return 2
     print("Selected for deletion:")
     for _, path in sorted(selected):
-        print(f"  {path}")
+        print(f"  {path} ({human_size(file_sizes[path])})")
     try:
         if input("Type DELETE to confirm: ") != "DELETE":
             print("Cancelled.")
@@ -173,18 +193,18 @@ def main() -> int:
     if not root.is_dir():
         parser.error(f"not a directory: {root}")
     root = root.resolve()
-    groups, counts = scan(root)
+    groups, counts, file_sizes = scan(root)
     if not groups:
         print("No duplicate files found.")
         return 0
     if args.dirs:
         show_directories(groups, counts, root)
     elif args.select:
-        return select_copies(groups, root)
+        return select_copies(groups, root, file_sizes)
     elif args.delete_one:
         return 0 if delete_copy(groups[0][-1], groups[0][0]) else 1
     else:
-        show_groups(groups, root, args.pretty)
+        show_groups(groups, root, args.pretty, file_sizes)
     return 0
 
 
