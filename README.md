@@ -15,7 +15,10 @@ Available modes:
 ./find_duplicates.py /path/to/directory --delete-one
 ```
 
-`--pretty` displays each duplicate group as a compact path tree. `--dirs` lists
+`--pretty` displays each duplicate group as a compact, colored path tree.
+Colors appear automatically in a terminal. Use `--color always` to retain
+colors when piping output, or `--color never` to disable them. Setting
+`NO_COLOR` also disables automatic colors. `--dirs` lists
 directory pairs ranked by the number of duplicate content groups found beneath
 both directories. The file counts also include files without duplicates; use
 them to judge how similar the directories are. This mode does not delete

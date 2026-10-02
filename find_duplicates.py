@@ -33,6 +33,10 @@ def human_size(size: int) -> str:
     raise AssertionError("unreachable")
 
 
+def paint(text: str, style: str, enabled: bool) -> str:
+    return f"\033[{style}m{text}\033[0m" if enabled else text
+
+
 def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int], dict[Path, int]]:
     sizes: dict[int, list[Path]] = defaultdict(list)
     counts: dict[Path, int] = defaultdict(int)
@@ -66,9 +70,13 @@ def scan(root: Path) -> tuple[list[list[Path]], dict[Path, int], dict[Path, int]
     return sorted(groups, key=lambda paths: str(paths[0])), counts, file_sizes
 
 
-def show_groups(groups: list[list[Path]], root: Path, pretty: bool, file_sizes: dict[Path, int]) -> None:
+def show_groups(
+    groups: list[list[Path]], root: Path, pretty: bool,
+    file_sizes: dict[Path, int], color: bool,
+) -> None:
     for number, paths in enumerate(groups, 1):
-        print(f"Duplicate group {number} ({len(paths)} files):")
+        heading = f"Duplicate group {number} ({len(paths)} files):"
+        print(paint(heading, "1;35", color))
         if not pretty:
             for path in paths:
                 print(f"  {path} ({human_size(file_sizes[path])})")
@@ -81,20 +89,25 @@ def show_groups(groups: list[list[Path]], root: Path, pretty: bool, file_sizes: 
                 node = node.setdefault(part, {})
             node[parts[-1]] = file_sizes[path]
 
-        def render(node: dict, indent: str = "  ") -> None:
-            for name, child in sorted(node.items()):
+        def render(node: dict, prefix: str = "") -> None:
+            entries = sorted(node.items())
+            for index, (name, child) in enumerate(entries):
                 label = name
                 while isinstance(child, dict) and len(child) == 1:
                     name, child = next(iter(child.items()))
                     label += "/" + name
+                last = index == len(entries) - 1
+                branch = paint("└── " if last else "├── ", "90", color)
                 if isinstance(child, dict):
-                    print(f"{indent}{label}/")
-                    render(child, indent + "  ")
+                    print(f"{prefix}{branch}{paint(label + '/', '1;34', color)}")
+                    render(child, prefix + ("    " if last else "│   "))
                 else:
-                    print(f"{indent}{label} ({human_size(child)})")
+                    filename = paint(label, "1;32", color)
+                    size = paint(f"({human_size(child)})", "33", color)
+                    print(f"{prefix}{branch}{filename} {size}")
 
         render(tree)
-    print(f"\nFound {len(groups)} duplicate group(s).")
+    print("\n" + paint(f"Found {len(groups)} duplicate group(s).", "1;35", color))
 
 
 def show_directories(groups: list[list[Path]], counts: dict[Path, int], root: Path) -> None:
@@ -188,6 +201,8 @@ def main() -> int:
     modes.add_argument("--dirs", action="store_true", help="show directory pairs sharing duplicate files")
     modes.add_argument("--select", action="store_true", help="select files to delete with fzf")
     modes.add_argument("--delete-one", action="store_true", help="delete one duplicate file and exit")
+    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+                        help="color for --pretty (default: auto)")
     args = parser.parse_args()
     root = args.directory.expanduser()
     if not root.is_dir():
@@ -204,7 +219,11 @@ def main() -> int:
     elif args.delete_one:
         return 0 if delete_copy(groups[0][-1], groups[0][0]) else 1
     else:
-        show_groups(groups, root, args.pretty, file_sizes)
+        color = args.pretty and (args.color == "always" or (
+            args.color == "auto" and sys.stdout.isatty()
+            and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+        ))
+        show_groups(groups, root, args.pretty, file_sizes, color)
     return 0
 
 
