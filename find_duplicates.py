@@ -436,8 +436,12 @@ def remove_duplicates(
         show_groups(groups, root, True, file_sizes, color, keepers, removed_dirs, hidden_groups)
         if removals:
             print("Exact directory trees to remove (their files are marked above):")
-            for item in removals:
-                print(f"  {item.target.relative_to(root)}/ -> keep {item.keep.relative_to(root)}/")
+            rows = [(f"{item.target.relative_to(root)}/", f"{item.keep.relative_to(root)}/")
+                    for item in removals]
+            width = max(len(target) for target, _ in rows)
+            arrow = paint("->", "1;36", color)
+            for target, retained in rows:
+                print(f"  {target:<{width}}  {arrow}  keep {retained}")
         count = sum(len(paths) - 1 for paths in groups)
         print(f"Will remove {count} file(s) from {len(groups)} group(s), "
               f"using {len(removals)} whole-directory removal(s).")
