@@ -12,7 +12,7 @@ Available modes:
 ./find_duplicates.py /path/to/directory --pretty
 ./find_duplicates.py /path/to/directory --dirs
 ./find_duplicates.py /path/to/directory --select
-./find_duplicates.py /path/to/directory --delete-one
+./find_duplicates.py /path/to/directory --delete
 ```
 
 `--pretty` displays each duplicate group as a compact, colored path tree.
@@ -31,7 +31,15 @@ unit, for example `Duplicate group 1 (2 files, 374 KiB each)`.
 `DELETE` at the confirmation prompt. The script refuses a selection that would
 remove every copy in a duplicate group.
 
-`--delete-one` removes exactly one file per run: the lexicographically last
-path in the first duplicate group, keeping the first path. Both files are
-hashed again immediately before deletion. Symlinked files and directories are
+`--delete` plans to keep one file in every duplicate group and remove all other
+copies. It prints the compact tree with `[KEEP]`, `[REMOVE]`, and
+`[REMOVE WITH DIRECTORY]` marks before asking `Proceed? [y/N/m to modify]`.
+The default answer is no. Choose `m` to change which file is kept in any group,
+then review the updated plan before confirming. `--delete-one` remains an alias
+for `--delete`.
+
+When a whole directory tree has the same relative file paths, contents, and
+empty subdirectories as a retained tree, the plan removes that directory in
+one operation. The preview still lists every file it contains. Both directory
+trees are checked again before removal. Symlinked files and directories are
 skipped by the scan.
