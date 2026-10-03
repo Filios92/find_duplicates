@@ -96,8 +96,13 @@ def show_groups(
     file_sizes: dict[Path, int], color: bool,
     keepers: dict[int, Path] | None = None,
     removed_dirs: set[Path] | None = None,
+    hidden_groups: set[int] | None = None,
 ) -> None:
+    shown = 0
     for number, paths in enumerate(groups, 1):
+        if hidden_groups and number in hidden_groups:
+            continue
+        shown += 1
         heading = f"Duplicate group {number} ({len(paths)} files, {human_size(file_sizes[paths[0]])} each):"
         print(paint(heading, "1;35", color))
         if not pretty:
@@ -130,7 +135,8 @@ def show_groups(
                     print(f"{prefix}{branch}{filename}{action}")
 
         render(tree)
-    print("\n" + paint(f"Found {len(groups)} duplicate group(s).", "1;35", color))
+    if shown:
+        print("\n" + paint(f"Found {shown} individual duplicate group(s).", "1;35", color))
 
 
 def file_action(
@@ -178,6 +184,14 @@ class DirectoryRemoval:
     manifest: tuple[tuple[str, ...], tuple[tuple[str, int, str], ...]]
 
 
+@dataclass(frozen=True)
+class DirectoryGroup:
+    directories: tuple[Path, ...]
+    manifest: tuple[tuple[str, ...], tuple[tuple[str, int, str], ...]]
+    file_groups: frozenset[int]
+    hideable_groups: frozenset[int]
+
+
 def directory_manifest(root: Path) -> tuple[tuple[str, ...], tuple[tuple[str, int, str], ...]]:
     """Include names, empty directories, sizes, and content in an exact tree comparison."""
     if root.is_symlink() or not root.is_dir():
@@ -202,10 +216,10 @@ def directory_manifest(root: Path) -> tuple[tuple[str, ...], tuple[tuple[str, in
     return tuple(sorted(directory_names)), tuple(sorted(files))
 
 
-def plan_directories(
-    root: Path, groups: list[list[Path]], keepers: dict[int, Path],
-    file_sizes: dict[Path, int], directories: set[Path], unsafe: set[Path],
-) -> list[DirectoryRemoval]:
+def exact_directory_groups(
+    root: Path, groups: list[list[Path]], file_sizes: dict[Path, int],
+    directories: set[Path], unsafe: set[Path],
+) -> list[DirectoryGroup]:
     group_of = {path: number for number, paths in enumerate(groups, 1) for path in paths}
     child_dirs: dict[Path, list[Path]] = defaultdict(list)
     child_files: dict[Path, list[Path]] = defaultdict(list)
@@ -236,36 +250,98 @@ def plan_directories(
         if subtree_files[directory]:
             matching[signatures[directory]].append(directory)
 
-    candidates: list[tuple[Path, Path]] = []
+    candidates: list[tuple[Path, ...]] = []
     for siblings in matching.values():
-        if len(siblings) < 2:
+        if len(siblings) >= 2:
+            candidates.append(tuple(sorted(siblings)))
+    candidates.sort(key=lambda siblings: (min(len(path.parts) for path in siblings), str(siblings[0])))
+
+    result: list[DirectoryGroup] = []
+    for siblings in candidates:
+        if any(
+            left == right or left in right.parents or right in left.parents
+            for previous in result for left in siblings for right in previous.directories
+        ):
             continue
-        retained = sorted(directory for directory in siblings if all(
-            group_of.get(path) is None or keepers[group_of[path]] == path
-            for path in subtree_files[directory]
-        ))
+        manifests: dict[tuple, list[Path]] = defaultdict(list)
+        for directory in siblings:
+            try:
+                manifests[directory_manifest(directory)].append(directory)
+            except OSError as error:
+                print(f"Warning: cannot compare directory {directory}: {error}", file=sys.stderr)
+        for manifest, matched in manifests.items():
+            if len(matched) < 2:
+                continue
+            all_paths = {path for directory in matched for path in subtree_files[directory]}
+            if any(path not in group_of for path in all_paths):
+                continue
+            file_groups = frozenset(group_of[path] for path in all_paths)
+            if any(any(sum(directory in path.parents for path in groups[number - 1]) != 1
+                       for directory in matched) for number in file_groups):
+                continue
+            hideable = frozenset(number for number in file_groups
+                                 if set(groups[number - 1]) <= all_paths)
+            result.append(DirectoryGroup(tuple(sorted(matched)), manifest, file_groups, hideable))
+    return sorted(result, key=lambda group: str(group.directories[0]))
+
+
+def plan_directories(
+    directory_groups: list[DirectoryGroup], keepers: dict[int, Path],
+) -> list[DirectoryRemoval]:
+    removals = []
+    for directory_group in directory_groups:
+        retained = [directory for directory in directory_group.directories if all(
+            directory in keepers[number].parents for number in directory_group.file_groups
+        )]
         if not retained:
             continue
         keep = retained[0]
-        targets = sorted((directory for directory in siblings if directory != keep and all(
-            path in group_of and keepers[group_of[path]] != path
-            for path in subtree_files[directory]
-        )), key=lambda path: (len(path.parts), str(path)))
-        for target in targets:
-            candidates.append((target, keep))
-    removals = []
-    for target, keep in sorted(candidates, key=lambda item: (len(item[0].parts), str(item[0]))):
-        if any(previous.target in target.parents or target in previous.target.parents for previous in removals):
-            continue
-        try:
-            manifest = directory_manifest(target)
-            if manifest != directory_manifest(keep):
-                continue
-        except OSError as error:
-            print(f"Warning: cannot plan directory removal for {target}: {error}", file=sys.stderr)
-            continue
-        removals.append(DirectoryRemoval(target, keep, manifest))
+        for target in directory_group.directories:
+            if target != keep and all(
+                target not in keepers[number].parents for number in directory_group.file_groups
+            ):
+                removals.append(DirectoryRemoval(target, keep, directory_group.manifest))
     return sorted(removals, key=lambda item: str(item.target))
+
+
+def show_directory_groups(
+    displayed: list[tuple[int, DirectoryGroup, Path]], root: Path,
+    color: bool, planned: bool,
+) -> None:
+    for number, group, reference in displayed:
+        files = group.manifest[1]
+        total_size = sum(size for _, size, _ in files)
+        heading = (f"Duplicate directory group {number} "
+                   f"({len(group.directories)} dirs, {len(files)} files each, "
+                   f"{human_size(total_size)} per dir):")
+        print(paint(heading, "1;35", color))
+        relatives = [str(directory.relative_to(root)) for directory in group.directories]
+        common = Path(os.path.commonpath(relatives))
+        base = ""
+        if common != Path("."):
+            print(paint(f"└── {common}/", "1;34", color))
+            base = "    "
+        ordered = [reference] + [directory for directory in group.directories if directory != reference]
+        for index, directory in enumerate(ordered):
+            last = index == len(ordered) - 1
+            name = str(directory.relative_to(root)) if not base else str(directory.relative_to(root).relative_to(common))
+            branch = paint("└── " if last else "├── ", "90", color)
+            suffix = ""
+            if planned:
+                marker = "[KEEP]" if directory == reference else "[REMOVE DIRECTORY; same files as above]"
+                suffix = " " + paint(marker, "1;32" if directory == reference else "1;31", color)
+            elif directory != reference:
+                suffix = " " + paint("[same files as above]", "90", color)
+            print(f"{base}{branch}{paint(name + '/', '1;34', color)}{suffix}")
+            if directory == reference:
+                child_prefix = base + ("    " if last else "│   ")
+                for file_index, (path, size, _) in enumerate(files):
+                    file_branch = paint("└── " if file_index == len(files) - 1 else "├── ", "90", color)
+                    filename = paint(path, "1;32", color)
+                    print(f"{child_prefix}{file_branch}{filename} "
+                          f"{paint('(' + human_size(size) + ')', '33', color)}")
+    if displayed:
+        print("\n" + paint(f"Found {len(displayed)} duplicate directory group(s).", "1;35", color))
 
 
 def delete_copy(path: Path, keep: Path) -> bool:
@@ -283,18 +359,42 @@ def delete_copy(path: Path, keep: Path) -> bool:
     return True
 
 
-def modify_keepers(groups: list[list[Path]], keepers: dict[int, Path], root: Path) -> bool:
+def modify_keepers(
+    groups: list[list[Path]], directory_groups: list[DirectoryGroup],
+    keepers: dict[int, Path], root: Path,
+) -> bool:
     while True:
         try:
-            answer = input(f"Group to change [1-{len(groups)}, Enter to review, q to cancel]: ").strip()
+            answer = input(f"Change file group 1-{len(groups)} or directory group d1-d{len(directory_groups)} "
+                           "[Enter to review, q to cancel]: ").strip()
         except EOFError:
             return False
         if answer == "":
             return True
         if answer.lower() == "q":
             return False
+        if answer.lower().startswith("d") and answer[1:].isdecimal():
+            directory_number = int(answer[1:])
+            if not 1 <= directory_number <= len(directory_groups):
+                print("Invalid directory group number.")
+                continue
+            directory_group = directory_groups[directory_number - 1]
+            print(f"Directory group d{directory_number}: choose the directory to keep")
+            for index, directory in enumerate(directory_group.directories, 1):
+                print(f"  {index}. {directory.relative_to(root)}/")
+            try:
+                choice = input(f"Keep directory [1-{len(directory_group.directories)}]: ").strip()
+            except EOFError:
+                return False
+            if not choice.isdecimal() or not 1 <= int(choice) <= len(directory_group.directories):
+                print("Invalid directory number; choices unchanged.")
+                continue
+            selected_dir = directory_group.directories[int(choice) - 1]
+            for number in directory_group.file_groups:
+                keepers[number] = next(path for path in groups[number - 1] if selected_dir in path.parents)
+            continue
         if not answer.isdecimal() or not 1 <= int(answer) <= len(groups):
-            print("Enter a group number, Enter, or q.")
+            print("Enter a file or directory group number, Enter, or q.")
             continue
         number = int(answer)
         paths = groups[number - 1]
@@ -316,14 +416,24 @@ def modify_keepers(groups: list[list[Path]], keepers: dict[int, Path], root: Pat
 
 def remove_duplicates(
     root: Path, groups: list[list[Path]], file_sizes: dict[Path, int],
-    directories: set[Path], unsafe: set[Path], color: bool,
+    directory_groups: list[DirectoryGroup], color: bool,
 ) -> int:
     keepers = {number: paths[0] for number, paths in enumerate(groups, 1)}
     while True:
-        removals = plan_directories(root, groups, keepers, file_sizes, directories, unsafe)
+        removals = plan_directories(directory_groups, keepers)
         removed_dirs = {item.target for item in removals}
+        displayed = []
+        hidden_groups = set()
+        for number, group in enumerate(directory_groups, 1):
+            group_removals = [item for item in removals if item.target in group.directories]
+            if len(group_removals) != len(group.directories) - 1:
+                continue
+            reference = group_removals[0].keep
+            displayed.append((number, group, reference))
+            hidden_groups.update(group.hideable_groups)
         print("Planned removals:")
-        show_groups(groups, root, True, file_sizes, color, keepers, removed_dirs)
+        show_directory_groups(displayed, root, color, planned=True)
+        show_groups(groups, root, True, file_sizes, color, keepers, removed_dirs, hidden_groups)
         if removals:
             print("Exact directory trees to remove (their files are marked above):")
             for item in removals:
@@ -336,7 +446,7 @@ def remove_duplicates(
         except EOFError:
             answer = ""
         if answer == "m":
-            if not modify_keepers(groups, keepers, root):
+            if not modify_keepers(groups, directory_groups, keepers, root):
                 print("Cancelled.")
                 return 0
             continue
@@ -431,6 +541,10 @@ def main() -> int:
         print("No duplicate files found.")
         return 0
     if args.dirs:
+        directory_groups = exact_directory_groups(root, groups, file_sizes, directories, unsafe)
+        displayed = [(number, group, group.directories[0])
+                     for number, group in enumerate(directory_groups, 1)]
+        show_directory_groups(displayed, root, color=False, planned=False)
         show_directories(groups, counts, root)
     elif args.select:
         return select_copies(groups, root, file_sizes)
@@ -439,15 +553,25 @@ def main() -> int:
             args.color == "auto" and sys.stdout.isatty()
             and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
         )
-        return remove_duplicates(root, groups, file_sizes, directories, unsafe, color)
+        directory_groups = exact_directory_groups(root, groups, file_sizes, directories, unsafe)
+        return remove_duplicates(root, groups, file_sizes, directory_groups, color)
     else:
         color = args.pretty and (args.color == "always" or (
             args.color == "auto" and sys.stdout.isatty()
             and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
         ))
-        show_groups(groups, root, args.pretty, file_sizes, color)
+        directory_groups = exact_directory_groups(root, groups, file_sizes, directories, unsafe) if args.pretty else []
+        displayed = [(number, group, group.directories[0])
+                     for number, group in enumerate(directory_groups, 1)]
+        show_directory_groups(displayed, root, color, planned=False)
+        hidden_groups = {number for group in directory_groups for number in group.hideable_groups}
+        show_groups(groups, root, args.pretty, file_sizes, color, hidden_groups=hidden_groups)
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        raise SystemExit(130)

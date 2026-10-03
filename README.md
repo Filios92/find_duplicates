@@ -15,7 +15,10 @@ Available modes:
 ./find_duplicates.py /path/to/directory --delete
 ```
 
-`--pretty` displays each duplicate group as a compact, colored path tree.
+`--pretty` displays each duplicate group as a compact, colored path tree. Exact
+duplicate directory trees appear as one directory group: the files and their
+sizes are listed under one directory, and the other directories say
+`[same files as above]`.
 Colors appear automatically in a terminal. Use `--color always` to retain
 colors when piping output, or `--color never` to disable them. Setting
 `NO_COLOR` also disables automatic colors. `--dirs` lists
@@ -40,6 +43,9 @@ for `--delete`.
 
 When a whole directory tree has the same relative file paths, contents, and
 empty subdirectories as a retained tree, the plan removes that directory in
-one operation. The preview still lists every file it contains. Both directory
-trees are checked again before removal. Symlinked files and directories are
-skipped by the scan.
+one operation. The preview shows the files under the kept directory and marks
+the other one `[REMOVE DIRECTORY; same files as above]`. File permissions,
+owners, and timestamps do not affect the match. Choose `m`, then a directory
+group such as `d1`, to switch which directory is kept. Both trees are checked
+again before removal. Ctrl-C cancels cleanly with exit status 130. Symlinked
+files and directories are skipped by the scan.
