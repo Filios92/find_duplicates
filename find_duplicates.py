@@ -435,12 +435,15 @@ def remove_duplicates(
         print("Planned removals:")
         show_directory_groups(displayed, root, color, planned=True)
         show_groups(groups, root, True, file_sizes, color, keepers, removed_dirs, hidden_groups)
-        individual_removals = [
-            (number, path, keepers[number])
+        planned_files = [
+            (number, path)
             for number, paths in enumerate(groups, 1)
             for path in paths
             if path != keepers[number]
-            and not any(directory in path.parents for directory in removed_dirs)
+        ]
+        individual_removals = [
+            (number, path, keepers[number]) for number, path in planned_files
+            if not any(directory in path.parents for directory in removed_dirs)
         ]
         arrow = paint("->", "1;36", color)
         print("Directories to remove (their files are shown above):")
@@ -461,8 +464,10 @@ def remove_duplicates(
                 print(f"  {target:<{width}}  {arrow}  keep {retained} (group {number})")
         else:
             print("  (none)")
-        count = sum(len(paths) - 1 for paths in groups)
-        print(f"Will remove {count} file(s) from {len(groups)} group(s), "
+        count = len(planned_files)
+        total_size = sum(file_sizes[path] for _, path in planned_files)
+        print(f"Will remove {count} file(s) totaling {human_size(total_size)} "
+              f"from {len(groups)} group(s), "
               f"using {len(removals)} whole-directory and "
               f"{len(individual_removals)} individual removal(s).")
         try:

@@ -38,7 +38,8 @@ remove every copy in a duplicate group.
 copies. It prints the compact tree with `[KEEP]`, `[REMOVE]`, and
 `[REMOVE WITH DIRECTORY]` marks before asking `Proceed? [y/N/m to modify]`.
 The operation summary lists directories first, then every file to remove
-individually, before the confirmation prompt.
+individually, before the confirmation prompt. It includes the combined size of
+all files that would be removed, including files inside removed directories.
 The default answer is no. Choose `m` to change which file is kept in any group,
 then review the updated plan before confirming. `--delete-one` remains an alias
 for `--delete`.
