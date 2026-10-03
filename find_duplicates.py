@@ -311,8 +311,9 @@ def show_directory_groups(
     for number, group, reference in displayed:
         files = group.manifest[1]
         total_size = sum(size for _, size, _ in files)
+        file_word = "file" if len(files) == 1 else "files"
         heading = (f"Duplicate directory group {number} "
-                   f"({len(group.directories)} dirs, {len(files)} files each, "
+                   f"({len(group.directories)} dirs, {len(files)} {file_word} each, "
                    f"{human_size(total_size)} per dir):")
         print(paint(heading, "1;35", color))
         relatives = [str(directory.relative_to(root)) for directory in group.directories]
@@ -434,17 +435,36 @@ def remove_duplicates(
         print("Planned removals:")
         show_directory_groups(displayed, root, color, planned=True)
         show_groups(groups, root, True, file_sizes, color, keepers, removed_dirs, hidden_groups)
+        individual_removals = [
+            (number, path, keepers[number])
+            for number, paths in enumerate(groups, 1)
+            for path in paths
+            if path != keepers[number]
+            and not any(directory in path.parents for directory in removed_dirs)
+        ]
+        arrow = paint("->", "1;36", color)
+        print("Directories to remove (their files are shown above):")
         if removals:
-            print("Exact directory trees to remove (their files are marked above):")
             rows = [(f"{item.target.relative_to(root)}/", f"{item.keep.relative_to(root)}/")
                     for item in removals]
             width = max(len(target) for target, _ in rows)
-            arrow = paint("->", "1;36", color)
             for target, retained in rows:
                 print(f"  {target:<{width}}  {arrow}  keep {retained}")
+        else:
+            print("  (none)")
+        print("Files to remove individually:")
+        if individual_removals:
+            rows = [(number, str(path.relative_to(root)), str(keep.relative_to(root)))
+                    for number, path, keep in individual_removals]
+            width = max(len(target) for _, target, _ in rows)
+            for number, target, retained in rows:
+                print(f"  {target:<{width}}  {arrow}  keep {retained} (group {number})")
+        else:
+            print("  (none)")
         count = sum(len(paths) - 1 for paths in groups)
         print(f"Will remove {count} file(s) from {len(groups)} group(s), "
-              f"using {len(removals)} whole-directory removal(s).")
+              f"using {len(removals)} whole-directory and "
+              f"{len(individual_removals)} individual removal(s).")
         try:
             answer = input("Proceed? [y/N/m to modify]: ").strip().lower()
         except EOFError:
@@ -470,11 +490,8 @@ def remove_duplicates(
             failures += 1
             print(f"Cannot remove directory {item.target}: {error}", file=sys.stderr)
 
-    for number, paths in enumerate(groups, 1):
-        for path in paths:
-            if path == keepers[number] or any(directory in path.parents for directory in removed_dirs):
-                continue
-            failures += not delete_copy(path, keepers[number])
+    for _, path, keep in individual_removals:
+        failures += not delete_copy(path, keep)
     return 1 if failures else 0
 
 

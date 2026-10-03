@@ -37,6 +37,8 @@ remove every copy in a duplicate group.
 `--delete` plans to keep one file in every duplicate group and remove all other
 copies. It prints the compact tree with `[KEEP]`, `[REMOVE]`, and
 `[REMOVE WITH DIRECTORY]` marks before asking `Proceed? [y/N/m to modify]`.
+The operation summary lists directories first, then every file to remove
+individually, before the confirmation prompt.
 The default answer is no. Choose `m` to change which file is kept in any group,
 then review the updated plan before confirming. `--delete-one` remains an alias
 for `--delete`.
