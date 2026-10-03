@@ -75,11 +75,11 @@ def show_groups(
     file_sizes: dict[Path, int], color: bool,
 ) -> None:
     for number, paths in enumerate(groups, 1):
-        heading = f"Duplicate group {number} ({len(paths)} files):"
+        heading = f"Duplicate group {number} ({len(paths)} files, {human_size(file_sizes[paths[0]])} each):"
         print(paint(heading, "1;35", color))
         if not pretty:
             for path in paths:
-                print(f"  {path} ({human_size(file_sizes[path])})")
+                print(f"  {path}")
             continue
         tree: dict = {}
         for path in paths:
@@ -87,7 +87,7 @@ def show_groups(
             parts = path.relative_to(root).parts
             for part in parts[:-1]:
                 node = node.setdefault(part, {})
-            node[parts[-1]] = file_sizes[path]
+            node[parts[-1]] = None
 
         def render(node: dict, prefix: str = "") -> None:
             entries = sorted(node.items())
@@ -103,8 +103,7 @@ def show_groups(
                     render(child, prefix + ("    " if last else "│   "))
                 else:
                     filename = paint(label, "1;32", color)
-                    size = paint(f"({human_size(child)})", "33", color)
-                    print(f"{prefix}{branch}{filename} {size}")
+                    print(f"{prefix}{branch}{filename}")
 
         render(tree)
     print("\n" + paint(f"Found {len(groups)} duplicate group(s).", "1;35", color))
@@ -146,7 +145,7 @@ def delete_copy(path: Path, keep: Path) -> bool:
     except OSError as error:
         print(f"Cannot delete {path}: {error}", file=sys.stderr)
         return False
-    print(f"Deleted: {path} ({human_size(size)})\nKept:    {keep} ({human_size(size)})")
+    print(f"Deleted: {path}\nKept:    {keep}\nSize:    {human_size(size)} each")
     return True
 
 
@@ -161,7 +160,7 @@ def select_copies(groups: list[list[Path]], root: Path, file_sizes: dict[Path, i
             index = len(choices) + 1
             choices[index] = (group_number, path)
             label = str(path.relative_to(root)).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
-            lines.append(f"{index}\tgroup {group_number}\t{label} ({human_size(file_sizes[path])})")
+            lines.append(f"{index}\tgroup {group_number}\t{label}")
     result = subprocess.run(
         ["fzf", "--multi", "--read0", "--print0", "--delimiter=\t", "--with-nth=2..",
          "--header=Tab: select files; Enter: review deletion"],
@@ -178,8 +177,11 @@ def select_copies(groups: list[list[Path]], root: Path, file_sizes: dict[Path, i
             print(f"Cannot delete every file in group {group_number}; selection cancelled.", file=sys.stderr)
             return 2
     print("Selected for deletion:")
-    for _, path in sorted(selected):
-        print(f"  {path} ({human_size(file_sizes[path])})")
+    for group_number in sorted({group_number for group_number, _ in selected}):
+        size = human_size(file_sizes[groups[group_number - 1][0]])
+        print(f"  Group {group_number} ({size} each):")
+        for _, path in sorted(item for item in selected if item[0] == group_number):
+            print(f"    {path}")
     try:
         if input("Type DELETE to confirm: ") != "DELETE":
             print("Cancelled.")
