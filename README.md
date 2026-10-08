@@ -1,10 +1,19 @@
 # Duplicate file finder
 
-Scan a directory recursively using file size and SHA-256 content hashes:
+Scan one or more directories recursively using file size and SHA-256 content
+hashes. All supplied directories are searched together, so duplicates across
+them appear in the same group:
 
 ```sh
 ./find_duplicates.py /path/to/directory
+./find_duplicates.py /path/to/first /path/to/second --pretty
 ```
+
+Paths in compact views are shown relative to the directories' common parent.
+Repeated or nested inputs are scanned once.
+With `--delete`, an entire supplied directory can be proposed for removal when
+another supplied directory is an exact retained copy; the confirmation preview
+shows that operation explicitly.
 
 Available modes:
 

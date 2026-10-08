@@ -38,13 +38,13 @@ def paint(text: str, style: str, enabled: bool) -> str:
     return f"\033[{style}m{text}\033[0m" if enabled else text
 
 
-def scan(root: Path) -> tuple[
+def scan(roots: list[Path]) -> tuple[
     list[list[Path]], dict[Path, int], dict[Path, int], set[Path], set[Path],
 ]:
     sizes: dict[int, list[Path]] = defaultdict(list)
     counts: dict[Path, int] = defaultdict(int)
     file_sizes: dict[Path, int] = {}
-    directories = {root}
+    directories = set(roots)
     unsafe = set()
 
     def walk_error(error: OSError) -> None:
@@ -52,31 +52,32 @@ def scan(root: Path) -> tuple[
             unsafe.add(Path(error.filename))
         print(f"Warning: cannot scan directory: {error}", file=sys.stderr)
 
-    for current, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
-        parent_dir = Path(current)
-        for name in dirs[:]:
-            path = parent_dir / name
-            if path.is_symlink():
-                unsafe.add(parent_dir)
-                dirs.remove(name)
-            else:
-                directories.add(path)
-        for name in files:
-            path = Path(current) / name
-            try:
-                if path.is_symlink() or not path.is_file():
+    for scan_root in roots:
+        for current, dirs, files in os.walk(scan_root, followlinks=False, onerror=walk_error):
+            parent_dir = Path(current)
+            for name in dirs[:]:
+                path = parent_dir / name
+                if path.is_symlink():
                     unsafe.add(parent_dir)
-                    continue
-                size = path.stat().st_size
-                sizes[size].append(path)
-                file_sizes[path] = size
-                parent = path.parent
-                while parent != root:
-                    counts[parent] += 1
-                    parent = parent.parent
-            except OSError as error:
-                unsafe.add(parent_dir)
-                print(f"Warning: cannot inspect {path}: {error}", file=sys.stderr)
+                    dirs.remove(name)
+                else:
+                    directories.add(path)
+            for name in files:
+                path = Path(current) / name
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        unsafe.add(parent_dir)
+                        continue
+                    size = path.stat().st_size
+                    sizes[size].append(path)
+                    file_sizes[path] = size
+                    parent = path.parent
+                    while parent == scan_root or scan_root in parent.parents:
+                        counts[parent] += 1
+                        parent = parent.parent
+                except OSError as error:
+                    unsafe.add(parent_dir)
+                    print(f"Warning: cannot inspect {path}: {error}", file=sys.stderr)
     hashes: dict[tuple[int, str], list[Path]] = defaultdict(list)
     for size, paths in sizes.items():
         if len(paths) < 2:
@@ -152,13 +153,16 @@ def file_action(
     return " " + paint("[REMOVE]", "1;31", color)
 
 
-def show_directories(groups: list[list[Path]], counts: dict[Path, int], root: Path) -> None:
+def show_directories(
+    groups: list[list[Path]], counts: dict[Path, int], root: Path,
+    scanned_directories: set[Path],
+) -> None:
     shared: dict[tuple[Path, Path], int] = defaultdict(int)
     for paths in groups:
         directories: set[Path] = set()
         for path in paths:
             parent = path.parent
-            while parent != root:
+            while parent in scanned_directories:
                 directories.add(parent)
                 parent = parent.parent
         for left, right in combinations(sorted(directories), 2):
@@ -548,7 +552,8 @@ def select_copies(groups: list[list[Path]], root: Path, file_sizes: dict[Path, i
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("directory", type=Path, help="directory to scan recursively")
+    parser.add_argument("directories", nargs="+", type=Path,
+                        help="one or more directories to scan together, recursively")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--pretty", action="store_true", help="show duplicate paths as compact trees")
     modes.add_argument("--dirs", action="store_true", help="show directory pairs sharing duplicate files")
@@ -558,11 +563,19 @@ def main() -> int:
     parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
                         help="color for --pretty (default: auto)")
     args = parser.parse_args()
-    root = args.directory.expanduser()
-    if not root.is_dir():
-        parser.error(f"not a directory: {root}")
-    root = root.resolve()
-    groups, counts, file_sizes, directories, unsafe = scan(root)
+    resolved = []
+    for supplied in args.directories:
+        path = supplied.expanduser()
+        if not path.is_dir():
+            parser.error(f"not a directory: {path}")
+        resolved.append(path.resolve())
+    roots = []
+    for path in sorted(set(resolved), key=lambda item: (len(item.parts), str(item))):
+        if any(existing == path or existing in path.parents for existing in roots):
+            continue
+        roots.append(path)
+    root = Path(os.path.commonpath([str(path) for path in roots]))
+    groups, counts, file_sizes, directories, unsafe = scan(roots)
     if not groups:
         print("No duplicate files found.")
         return 0
@@ -571,7 +584,7 @@ def main() -> int:
         displayed = [(number, group, group.directories[0])
                      for number, group in enumerate(directory_groups, 1)]
         show_directory_groups(displayed, root, color=False, planned=False)
-        show_directories(groups, counts, root)
+        show_directories(groups, counts, root, directories)
     elif args.select:
         return select_copies(groups, root, file_sizes)
     elif args.delete:
